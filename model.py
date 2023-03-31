@@ -15,8 +15,39 @@ import numpy as np
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-def decoder_mask(seq_len):
+def make_pad_mask(query, key, pad_idx=0):
+    # query: (n_batch, query_seq_len)
+    # key: (n_batch, key_seq_len)
+    query_seq_len, key_seq_len = query.size(1), key.size(1)
+
+    key_mask = key.ne(pad_idx).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
+    key_mask = key_mask.repeat(1, 1, query_seq_len, 1)    # (n_batch, 1, query_seq_len, key_seq_len)
+
+    query_mask = query.ne(pad_idx).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
+    query_mask = query_mask.repeat(1, 1, 1, key_seq_len)  # (n_batch, 1, query_seq_len, key_seq_len)
+
+    mask = key_mask & query_mask
+    mask.requires_grad = False
+
+    return mask
+
+def make_seq_mask(query):
+    # query: (n_batch, query_seq_len)
+    # No need to account for query sequence length! Only used in non-mixed layer.
+    seq_len = query.size(1)
     return torch.from_numpy(np.triu(np.ones((1, seq_len, seq_len))) == 0).long()
+
+def make_src_mask(src):
+    return make_pad_mask(src, src)
+
+def make_trg_mask(trg):
+    pad_mask = make_pad_mask(trg, trg)
+    seq_mask = make_seq_mask(trg)
+    mask = pad_mask & seq_mask
+    return mask
+
+def make_src_trg_mask(src, trg):
+    return make_pad_mask(trg, src)
 
 # Initial Word Embedding
 class Embedder(nn.Module):
@@ -60,15 +91,15 @@ class SelfAttention(nn.Module):
         super(SelfAttention, self).__init__()
 
     def forward(self, queries, keys, values, mask=None):
-        # query, key, value: (n_batch, h, seq_len, d_k)
+        # query, key, value: (n_batch, h, seq_len, d_k (d_j))
         # mask: (n_batch, 1, seq_len, seq_len)
         d_k = keys.shape[-1]
-        scores = torch.matmul(queries, torch.transpose(keys, -2, -1)) # (n_batch, h, trg_seq_len, src_seq_len)
+        scores = torch.matmul(queries, torch.transpose(keys, -2, -1)) # (n_batch, h, query_seq_len, key_seq_len)
         scores = scores / math.sqrt(d_k)
         if mask is not None:
             scores = scores.masked_fill_(mask==0, -1e9)
         scores = F.softmax(scores, dim=-1)
-        output = torch.matmul(scores, values) # (n_batch, h, trg_seq_len, d_k)
+        output = torch.matmul(scores, values) # (n_batch, h, key_seq_len, d_k)
         return output
 
 # Multi-Head Attention
@@ -145,10 +176,10 @@ class EncoderBlock(nn.Module):
         self.layernorm1 = LayerNorm(d_model)
         self.layernorm2 = LayerNorm(d_model)
     
-    def forward(self, input):
+    def forward(self, input, mask):
         # input : (n_batch, seq_len, d_model)
         # final output : (n_batch, seq_len, d_model)
-        output = self.multihead_attention(input, input, input) # (n_batch, seq_len, d_model)
+        output = self.multihead_attention(input, input, input, mask) # (n_batch, seq_len, d_model)
         output = input + output
         output = self.layernorm1(output)
 
@@ -162,21 +193,21 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(self, d_model=512, n_heads=8, d_ff=2048):
         super(DecoderBlock, self).__init__()
-        self.masked_attention = MultiHeadAttention(d_model, n_heads)
-        self.multihead_attention = MultiHeadAttention(d_model, n_heads)
+        self.multihead_attention1 = MultiHeadAttention(d_model, n_heads)
+        self.multihead_attention2 = MultiHeadAttention(d_model, n_heads)
         self.feedforward = FeedForward(d_model, d_ff)
         self.layernorm1 = LayerNorm(d_model)
         self.layernorm2 = LayerNorm(d_model)
         self.layernorm3 = LayerNorm(d_model)
 
-    def forward(self, input, e_output, mask):
-        output = self.masked_attention(input, input, input, mask) # (n_batch, seq_len, d_model)
+    def forward(self, input, e_output, trg_mask, src_trg_mask):
+        output = self.multihead_attention1(input, input, input, trg_mask) # (n_batch, seq_len, d_model)
         output = input + output
         output = self.layernorm1(output)
 
         # "the queries come from the previous decoder layer, 
         # and the memory keys and values come from the output of the encoder.""
-        output2 = self.multihead_attention(e_output, e_output, output) # (n_batch, seq_len, d_model)
+        output2 = self.multihead_attention2(e_output, e_output, output, src_trg_mask) # (n_batch, seq_len, d_model)
         output2 = output + output2
         output2 = self.layernorm2(output2)
 
@@ -195,12 +226,12 @@ class Encoder(nn.Module):
         self.pos_enconder = PositionalEncoding(d_model, max_len)
         self.encoder_blocks = get_clones(EncoderBlock(d_model, n_heads, d_ff), N)
 
-    def forward(self, input):
+    def forward(self, input, mask):
         # input : (n_batch, seq_len)
         output = self.embedder(input) # (n_batch, seq_len, d_model)
         output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
         for i in range(self.N):
-            output = self.encoder_blocks[i](output) # (n_batch, seq_len, d_model)
+            output = self.encoder_blocks[i](output, mask) # (n_batch, seq_len, d_model)
 
         return output
 
@@ -213,14 +244,14 @@ class Decoder(nn.Module):
         self.pos_enconder = PositionalEncoding(d_model, max_len)
         self.decoder_blocks = get_clones(DecoderBlock(d_model, n_heads, d_ff), N)
 
-    def forward(self, input, e_output):
+    def forward(self, input, e_output, trg_mask, src_trg_mask):
         # input : (n_batch, seq_len)
         # e_output : (n_batch, seq_len, d_model)
         seq_len = input.size()[1] # ineffective w/ padded input
         output = self.embedder(input) # (n_batch, seq_len, d_model)
         output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
         for i in range(self.N):
-            output = self.decoder_blocks[i](output, e_output, decoder_mask(seq_len)) # (n_batch, seq_len, d_model)
+            output = self.decoder_blocks[i](output, e_output, trg_mask, src_trg_mask) # (n_batch, seq_len, d_model)
 
         return output
 
@@ -235,9 +266,14 @@ class Transformer(nn.Module):
     def forward(self, src, trg):
         # src : (n_batch, src_seq_len)
         # trg : (n_batch, trg_seq_len)
-        e_output = self.encoder(src) # (n_batch, src_seq_len, d_model)
-        d_output = self.decoder(trg, e_output) # (n_batch, trg_seq_len, d_model)
+        src_mask = make_src_mask(src)
+        trg_mask = make_trg_mask(trg)
+        src_trg_mask = make_src_trg_mask(src, trg)
+
+        e_output = self.encoder(src, src_mask) # (n_batch, src_seq_len, d_model)
+        d_output = self.decoder(trg, e_output, trg_mask, src_trg_mask) # (n_batch, trg_seq_len, d_model)
         output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, trg_seq_len, trg_vocab)
+
         return output
     
 # # BERT
@@ -255,3 +291,8 @@ class Transformer(nn.Module):
 
 #     def forward(self):
 #         return
+
+test1 = torch.randn(10, 100).long() + 100
+test2 = torch.randn(10, 200).long() + 100
+transformer = Transformer(1000, 1000)
+print(transformer(test1, test2).size())
