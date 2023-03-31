@@ -9,41 +9,50 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import copy
+import numpy as np
 
 def get_clones(module, N):
-    return nn.ModuleList([module.copy.deepcopy() for i in range(N)])
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+
+def decoder_mask(seq_len):
+    return torch.from_numpy(np.triu(np.ones((1, seq_len, seq_len))) == 0).long()
 
 # Initial Word Embedding
 class Embedder(nn.Module):
-    def __init__(self, vocab_size, d_model):
+    def __init__(self, vocab_size, d_model=512):
         super(Embedder, self).__init__()
-        self.embed = nn.Embedding(vocab_size, d_model)
+        self.embed = nn.Embedding(vocab_size, d_model) # vocab_size is not max_len
 
     def forward(self, input):
-        return self.embed(input)
+        # input : (n_batch, seq_len)
+        return self.embed(input) # (n_batch, seq_len, d_model)
     
 # Positional Encoding
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_embed=512, max_len=256, device=torch.device("cpu")):
+    def __init__(self, d_model=512, max_len=256):
         super(PositionalEncoding, self).__init__()
 
-        encoding = torch.zeros(max_len, d_embed)
+        encoding = torch.zeros(max_len, d_model)
         encoding.requires_grad = False
 
-        position = torch.arange(0, max_len).float().unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_embed, 2) * -(math.log(10000.0) / d_embed))
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = 1 / (10000 ** (torch.arange(0, d_model, 2) / d_model))
 
         encoding[:, 0::2] = torch.sin(position * div_term)
         encoding[:, 1::2] = torch.cos(position * div_term)
 
         self.encoding = encoding.unsqueeze(0)
+        self.d_model = d_model
 
     def forward(self, input):
-        seq_len = input.size()[1]
+        # input : (n_batch, seq_len, d_model)
+        seq_len = input.size()[1] # ineffective w/ padded input
         pos_embed = self.encoding[:, :seq_len, :]
-        out = input + pos_embed
+        output = input * math.sqrt(self.d_model)
+        output = output + pos_embed # (n_batch, seq_len, d_model)
 
-        return out
+        return output
 
 # Scaled Dot-Product Attention
 class SelfAttention(nn.Module):
@@ -54,12 +63,12 @@ class SelfAttention(nn.Module):
         # query, key, value: (n_batch, h, seq_len, d_k)
         # mask: (n_batch, 1, seq_len, seq_len)
         d_k = keys.shape[-1]
-        scores = torch.matmul(queries, torch.transpose(keys, -2, -1)) # (n_batch, h, seq_len, seq_len)
+        scores = torch.matmul(queries, torch.transpose(keys, -2, -1)) # (n_batch, h, trg_seq_len, src_seq_len)
         scores = scores / math.sqrt(d_k)
         if mask is not None:
             scores = scores.masked_fill_(mask==0, -1e9)
         scores = F.softmax(scores, dim=-1)
-        output = torch.matmul(scores, values) # (n_batch, h, seq_len, d_k)
+        output = torch.matmul(scores, values) # (n_batch, h, trg_seq_len, d_k)
         return output
 
 # Multi-Head Attention
@@ -179,40 +188,70 @@ class DecoderBlock(nn.Module):
     
 # Encoder
 class Encoder(nn.Module):
-    def __init__(self):
+    def __init__(self, src_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
         super(Encoder, self).__init__()
+        self.N = N
+        self.embedder = Embedder(src_vocab, d_model)
+        self.pos_enconder = PositionalEncoding(d_model, max_len)
+        self.encoder_blocks = get_clones(EncoderBlock(d_model, n_heads, d_ff), N)
 
-    def forward(self):
-        return
+    def forward(self, input):
+        # input : (n_batch, seq_len)
+        output = self.embedder(input) # (n_batch, seq_len, d_model)
+        output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
+        for i in range(self.N):
+            output = self.encoder_blocks[i](output) # (n_batch, seq_len, d_model)
+
+        return output
 
 # Decoder
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, trg_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
         super(Decoder, self).__init__()
+        self.N = N
+        self.embedder = Embedder(trg_vocab, d_model)
+        self.pos_enconder = PositionalEncoding(d_model, max_len)
+        self.decoder_blocks = get_clones(DecoderBlock(d_model, n_heads, d_ff), N)
 
-    def forward(self):
-        return
+    def forward(self, input, e_output):
+        # input : (n_batch, seq_len)
+        # e_output : (n_batch, seq_len, d_model)
+        seq_len = input.size()[1] # ineffective w/ padded input
+        output = self.embedder(input) # (n_batch, seq_len, d_model)
+        output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
+        for i in range(self.N):
+            output = self.decoder_blocks[i](output, e_output, decoder_mask(seq_len)) # (n_batch, seq_len, d_model)
+
+        return output
 
 # Transformer
 class Transformer(nn.Module):
-    def __init__(self):
+    def __init__(self, src_vocab, trg_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
         super(Transformer, self).__init__()
+        self.encoder = Encoder(src_vocab, d_model, max_len, n_heads, d_ff, N)
+        self.decoder = Decoder(trg_vocab, d_model, max_len, n_heads, d_ff, N)
+        self.linear = nn.Linear(d_model, trg_vocab)
 
-    def forward(self):
-        return
+    def forward(self, src, trg):
+        # src : (n_batch, src_seq_len)
+        # trg : (n_batch, trg_seq_len)
+        e_output = self.encoder(src) # (n_batch, src_seq_len, d_model)
+        d_output = self.decoder(trg, e_output) # (n_batch, trg_seq_len, d_model)
+        output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, trg_seq_len, trg_vocab)
+        return output
     
-# BERT
-class BERT(nn.Module):
-    def __init__(self):
-        super(BERT, self).__init__()
+# # BERT
+# class BERT(nn.Module):
+#     def __init__(self):
+#         super(BERT, self).__init__()
 
-    def forward(self):
-        return
+#     def forward(self):
+#         return
 
-# GPT
-class GPT(nn.Module):
-    def __init__(self):
-        super(GPT, self).__init__()
+# # GPT
+# class GPT(nn.Module):
+#     def __init__(self):
+#         super(GPT, self).__init__()
 
-    def forward(self):
-        return
+#     def forward(self):
+#         return
