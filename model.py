@@ -12,6 +12,8 @@ import math
 import copy
 import numpy as np
 
+device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -21,10 +23,10 @@ def make_pad_mask(query, key, pad_idx=0):
     query_seq_len, key_seq_len = query.size(1), key.size(1)
 
     key_mask = key.ne(pad_idx).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
-    key_mask = key_mask.repeat(1, 1, query_seq_len, 1)    # (n_batch, 1, query_seq_len, key_seq_len)
+    key_mask = key_mask.repeat(1, 1, query_seq_len, 1).to(device)    # (n_batch, 1, query_seq_len, key_seq_len)
 
     query_mask = query.ne(pad_idx).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
-    query_mask = query_mask.repeat(1, 1, 1, key_seq_len)  # (n_batch, 1, query_seq_len, key_seq_len)
+    query_mask = query_mask.repeat(1, 1, 1, key_seq_len).to(device)  # (n_batch, 1, query_seq_len, key_seq_len)
 
     mask = key_mask & query_mask
     mask.requires_grad = False
@@ -35,14 +37,16 @@ def make_seq_mask(query):
     # query: (n_batch, query_seq_len)
     # No need to account for query sequence length! Only used in non-mixed layer.
     seq_len = query.size(1)
-    return torch.from_numpy(np.triu(np.ones((1, seq_len, seq_len))) == 0).long()
+    mask = torch.from_numpy(np.triu(np.ones((1, seq_len, seq_len))) == 0).long().to(device)
+    mask.requires_grad = False
+    return mask
 
 def make_src_mask(src):
     return make_pad_mask(src, src)
 
 def make_trg_mask(trg):
-    pad_mask = make_pad_mask(trg, trg)
-    seq_mask = make_seq_mask(trg)
+    pad_mask = make_pad_mask(trg, trg).to(device)
+    seq_mask = make_seq_mask(trg).to(device)
     mask = pad_mask & seq_mask
     return mask
 
@@ -73,7 +77,7 @@ class PositionalEncoding(nn.Module):
         encoding[:, 0::2] = torch.sin(position * div_term)
         encoding[:, 1::2] = torch.cos(position * div_term)
 
-        self.encoding = encoding.unsqueeze(0)
+        self.encoding = encoding.unsqueeze(0).to(device)
         self.d_model = d_model
 
     def forward(self, input):
@@ -275,24 +279,3 @@ class Transformer(nn.Module):
         output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, trg_seq_len, trg_vocab)
 
         return output
-    
-# # BERT
-# class BERT(nn.Module):
-#     def __init__(self):
-#         super(BERT, self).__init__()
-
-#     def forward(self):
-#         return
-
-# # GPT
-# class GPT(nn.Module):
-#     def __init__(self):
-#         super(GPT, self).__init__()
-
-#     def forward(self):
-#         return
-
-test1 = torch.randn(10, 100).long() + 100
-test2 = torch.randn(10, 200).long() + 100
-transformer = Transformer(1000, 1000)
-print(transformer(test1, test2).size())
