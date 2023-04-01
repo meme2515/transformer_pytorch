@@ -12,7 +12,7 @@ import os
 
 # conda env config vars set PYTORCH_ENABLE_MPS_FALLBACK=1
 
-DEVICE = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 D_MODEL = 512
