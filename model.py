@@ -12,46 +12,8 @@ import math
 import copy
 import numpy as np
 
-device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
-
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
-
-def make_pad_mask(query, key, pad_idx=0):
-    # query: (n_batch, query_seq_len)
-    # key: (n_batch, key_seq_len)
-    query_seq_len, key_seq_len = query.size(1), key.size(1)
-
-    key_mask = key.ne(pad_idx).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
-    key_mask = key_mask.repeat(1, 1, query_seq_len, 1).to(device)    # (n_batch, 1, query_seq_len, key_seq_len)
-
-    query_mask = query.ne(pad_idx).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
-    query_mask = query_mask.repeat(1, 1, 1, key_seq_len).to(device)  # (n_batch, 1, query_seq_len, key_seq_len)
-
-    mask = key_mask & query_mask
-    mask.requires_grad = False
-
-    return mask
-
-def make_seq_mask(query):
-    # query: (n_batch, query_seq_len)
-    # No need to account for query sequence length! Only used in non-mixed layer.
-    seq_len = query.size(1)
-    mask = torch.from_numpy(np.triu(np.ones((1, seq_len, seq_len))) == 0).long().to(device)
-    mask.requires_grad = False
-    return mask
-
-def make_src_mask(src):
-    return make_pad_mask(src, src)
-
-def make_trg_mask(trg):
-    pad_mask = make_pad_mask(trg, trg).to(device)
-    seq_mask = make_seq_mask(trg).to(device)
-    mask = pad_mask & seq_mask
-    return mask
-
-def make_src_trg_mask(src, trg):
-    return make_pad_mask(trg, src)
 
 # Initial Word Embedding
 class Embedder(nn.Module):
@@ -76,6 +38,9 @@ class PositionalEncoding(nn.Module):
 
         encoding[:, 0::2] = torch.sin(position * div_term)
         encoding[:, 1::2] = torch.cos(position * div_term)
+
+        device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.encoding = encoding.unsqueeze(0).to(device)
         self.d_model = d_model
@@ -270,12 +235,48 @@ class Transformer(nn.Module):
     def forward(self, src, trg):
         # src : (n_batch, src_seq_len)
         # trg : (n_batch, trg_seq_len)
-        src_mask = make_src_mask(src)
-        trg_mask = make_trg_mask(trg)
-        src_trg_mask = make_src_trg_mask(src, trg)
+        src_mask = self.make_src_mask(src)
+        trg_mask = self.make_trg_mask(trg)
+        src_trg_mask = self.make_src_trg_mask(src, trg)
 
         e_output = self.encoder(src, src_mask) # (n_batch, src_seq_len, d_model)
         d_output = self.decoder(trg, e_output, trg_mask, src_trg_mask) # (n_batch, trg_seq_len, d_model)
         output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, trg_seq_len, trg_vocab)
 
         return output
+
+    def make_pad_mask(self, query, key, pad_idx=0):
+        # query: (n_batch, query_seq_len)
+        # key: (n_batch, key_seq_len)
+        query_seq_len, key_seq_len = query.size(1), key.size(1)
+
+        key_mask = key.ne(pad_idx).unsqueeze(1).unsqueeze(2)  # (n_batch, 1, 1, key_seq_len)
+        key_mask = key_mask.repeat(1, 1, query_seq_len, 1)    # (n_batch, 1, query_seq_len, key_seq_len)
+
+        query_mask = query.ne(pad_idx).unsqueeze(1).unsqueeze(3)  # (n_batch, 1, query_seq_len, 1)
+        query_mask = query_mask.repeat(1, 1, 1, key_seq_len)  # (n_batch, 1, query_seq_len, key_seq_len)
+
+        mask = key_mask & query_mask
+        mask.requires_grad = False
+
+        return mask
+
+    def make_seq_mask(self, query):
+        # query: (n_batch, query_seq_len)
+        # No need to account for query sequence length! Only used in non-mixed layer.
+        seq_len = query.size(1)
+        mask = torch.tensor(np.triu(np.ones((1, seq_len, seq_len))) == 0, device=query.device).long()
+        mask.requires_grad = False
+        return mask
+
+    def make_src_mask(self, src):
+        return self.make_pad_mask(src, src)
+
+    def make_trg_mask(self, trg):
+        pad_mask = self.make_pad_mask(trg, trg)
+        seq_mask = self.make_seq_mask(trg)
+        mask = pad_mask & seq_mask
+        return mask
+
+    def make_src_trg_mask(self, src, trg):
+        return self.make_pad_mask(trg, src)

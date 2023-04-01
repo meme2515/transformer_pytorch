@@ -1,6 +1,6 @@
 # Tokenizer : https://www.analyticsvidhya.com/blog/2021/09/an-explanatory-guide-to-bert-tokenizer/
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import BertTokenizerFast
 
 import torch.nn.functional as F
@@ -25,5 +25,10 @@ class QUAK(Dataset):
 
         return eng_tokens, kor_tokens
     
-dataset = QUAK("overfit_test/h_based_16m.pe", "overfit_test/h_based_16m.src")
-dataloader = DataLoader(dataset, batch_size=10, shuffle=True)
+dataset = QUAK("QUAK-H/h_based_16m.pe", "QUAK-H/h_based_16m.src")
+generator = torch.Generator().manual_seed(42)
+train_set, val_set, test_set = random_split(dataset, [0.8, 0.1, 0.1], generator=generator)
+
+train_dataloader = DataLoader(train_set, batch_size=16, shuffle=True)
+val_dataloader = DataLoader(val_set, batch_size=16, shuffle=True)
+test_dataloader = DataLoader(test_set, batch_size=16, shuffle=True)
