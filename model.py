@@ -39,7 +39,7 @@ class PositionalEncoding(nn.Module):
         encoding[:, 0::2] = torch.sin(position * div_term)
         encoding[:, 1::2] = torch.cos(position * div_term)
 
-        device = torch.device("mps") if torch.backends.mps.is_available() else "cpu"
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.encoding = encoding.unsqueeze(0).to(device)
