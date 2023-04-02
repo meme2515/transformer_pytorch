@@ -1,7 +1,7 @@
 # QUAK Dataset : https://www.aihub.or.kr/aihubdata/data/view.do?currMenu=120&topMenu=100&aihubDataSe=extrldata&dataSetSn=71268
 
 from model import Transformer
-from dataloader import train_dataloader, val_dataloader, test_dataloader
+from dataloader import make_generator
 import torch.nn.functional as F
 
 import torch
@@ -9,11 +9,10 @@ import torch.nn as nn
 import time
 import wandb
 import os
+import argparse
 
-# conda env config vars set PYTORCH_ENABLE_MPS_FALLBACK=1
-
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-# DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 D_MODEL = 512
 MAX_LEN = 256
@@ -22,7 +21,6 @@ N = 6
 SRC_VOCAB = 50000
 TRG_VOCAB = 50000
 LEARNING_RATE = 0.0001
-EPOCHS = 1
 BETA1, BETA2 = 0.9, 0.98
 
 wandb.init(
@@ -32,7 +30,6 @@ wandb.init(
         "learning_rate" : LEARNING_RATE,
         "architecture" : "Transformer",
         "dataset" : "QUAK-H",
-        "epochs" : EPOCHS,
         "beta1" : BETA1,
         "beta2" : BETA2
     }
@@ -65,13 +62,19 @@ optim = torch.optim.Adam(
 )
 
 # Training Step
-def train(epochs, print_every=100):
+def train(epochs, input_dir, output_dir, print_every=100):
     model.train()
     
     start = time.time()
     temp = start
-    total_train_loss = 0
-    total_val_loss = 0
+    train_loss = 0
+    val_loss = 0
+    epoch_train_loss = 0
+    epoch_val_loss = 0
+    train_steps = 0
+    val_steps = 0
+
+    train_dataloader, val_dataloader, _ = make_generator(input_dir, output_dir)
     
     for epoch in range(epochs):
         # Train Step
@@ -83,47 +86,72 @@ def train(epochs, print_every=100):
             target_input = target[:, :-1]
             target_output = target[:, 1:].contiguous().view(-1)
 
+            model.train(True)
             preds = model(source, target_input)
-            
             optim.zero_grad()
             
             loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=0)
             loss.backward()
             optim.step()
-            wandb.log({"train loss": loss})
+            wandb.log({"step train loss": loss})
 
+            train_loss += loss.data
+            epoch_train_loss += loss.data
 
-            total_train_loss += loss.data
             if (i + 1) % print_every == 0:
-                loss_avg = total_train_loss / print_every
+                loss_avg = train_loss / print_every
                 print("Train : time = %dm, epoch %d, iter = %d, loss = %.10f, %ds per %d iters" % \
                       ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, \
                        time.time() - temp, print_every))
-                total_train_loss = 0
+                train_loss = 0
                 temp = time.time()
+        train_steps = i
+        torch.save(model, 'checkpoint/checkpoint_ep_%d.pt'%epoch + 1)
 
         # Validation Step
-        # for i, value in enumerate(val_dataloader):
-        #     src, trg = value
-        #     source = torch.stack(src).transpose(-2, -1).to(DEVICE)
-        #     target = torch.stack(trg).transpose(-2, -1).to(DEVICE)
+        for i, value in enumerate(val_dataloader):
+            src, trg = value
+            source = torch.stack(src).transpose(-2, -1).to(DEVICE)
+            target = torch.stack(trg).transpose(-2, -1).to(DEVICE)
 
-        #     target_input = target[:, :-1]
-        #     target_output = target[:, 1:].contiguous().view(-1)
+            target_input = target[:, :-1]
+            target_output = target[:, 1:].contiguous().view(-1)
 
-        #     preds = model(source, target_input)
-        #     loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=0)
+            model.train(False)
+            preds = model(source, target_input)
+            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=0)
 
-        #     wandb.log({"validation loss": loss})
-        #     total_val_loss += loss.data
-        #     if (i + 1) % print_every == 0:
-        #         loss_avg = total_val_loss / print_every
-        #         print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, %ds per %d iters" % \
-        #               ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, \
-        #                time.time() - temp, print_every))
-        #         total_val_loss = 0
-        #         temp = time.time()
+            val_loss += loss.data
+            epoch_val_loss += loss.data
+
+            if (i + 1) % print_every == 0:
+                loss_avg = val_loss / print_every
+                print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, %ds per %d iters" % \
+                      ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, \
+                       time.time() - temp, print_every))
+                val_loss = 0
+                temp = time.time()
+        val_steps = i
+
+        wandb.log({
+            "epoch train loss": epoch_train_loss / train_steps,
+            "epoch validation loss": epoch_val_loss / val_steps,
+        })
+
+        epoch_train_loss = 0
+        epoch_val_loss = 0
 
 if __name__ == "__main__":
-    train(EPOCHS)
-    torch.save(model.state_dict(), 'model.pt')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epoch', type=int, required=True)
+    parser.add_argument('--input_dir', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--print_step', type=int)
+    args = parser.parse_args()
+
+    train(
+        epochs=args.epoch, 
+        input_dir=args.input_dir, 
+        output_dir=args.output_dir,
+        print_every=args.print_step
+    )
