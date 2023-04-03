@@ -1,15 +1,17 @@
 # QUAK Dataset : https://www.aihub.or.kr/aihubdata/data/view.do?currMenu=120&topMenu=100&aihubDataSe=extrldata&dataSetSn=71268
 
-from model import Transformer
-from dataloader import make_generator
-import torch.nn.functional as F
+from model.model import Transformer
+from model.dataloader import make_generator
+from torch.optim.lr_scheduler import StepLR
 
+import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import time
 import wandb
 import os
 import argparse
+import shutil
 
 # DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -61,8 +63,15 @@ optim = torch.optim.Adam(
     eps=1e-9
 )
 
+# LR Scheduler
+scheduler = StepLR(optim, step_size=10, gamma=0.1)
+
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
 # Training Step
-def train(epochs, input_dir, output_dir, print_every=100):
+def train(epochs, input_dir, output_dir, print_every=10):
     model.train()
     
     start = time.time()
@@ -100,16 +109,19 @@ def train(epochs, input_dir, output_dir, print_every=100):
 
             if (i + 1) % print_every == 0:
                 loss_avg = train_loss / print_every
-                print("Train : time = %dm, epoch %d, iter = %d, loss = %.10f, %ds per %d iters" % \
-                      ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, \
-                       time.time() - temp, print_every))
+                print("Train : time = %dm, epoch %d, iter = %d, loss = %.10f, lr = %.10f, %ds per %d iters" % \
+                      ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, get_lr(optim), time.time() - temp, print_every))
                 train_loss = 0
                 temp = time.time()
-        train_steps = i
-        torch.save(model, 'checkpoint/checkpoint_ep_%d.pt'%epoch + 1)
+                
+        scheduler.step()
+        train_steps = i + 1
 
+        if (epoch + 1) % 10 == 0:
+            torch.save(model, 'checkpoint_ep_%d.pt'%(epoch + 1))
+        
         # Validation Step
-        for i, value in enumerate(val_dataloader):
+        for j, value in enumerate(val_dataloader):
             src, trg = value
             source = torch.stack(src).transpose(-2, -1).to(DEVICE)
             target = torch.stack(trg).transpose(-2, -1).to(DEVICE)
@@ -121,17 +133,15 @@ def train(epochs, input_dir, output_dir, print_every=100):
             preds = model(source, target_input)
             loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=0)
 
-            val_loss += loss.data
             epoch_val_loss += loss.data
 
-            if (i + 1) % print_every == 0:
+            if (j + 1) % print_every == 0:
                 loss_avg = val_loss / print_every
-                print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, %ds per %d iters" % \
-                      ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, \
-                       time.time() - temp, print_every))
+                print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, lr = %.10f, %ds per %d iters" % \
+                      ((time.time() - start) // 60, epoch + 1, j + 1, loss_avg, get_lr(optim), time.time() - temp, print_every))
                 val_loss = 0
                 temp = time.time()
-        val_steps = i
+        val_steps = j + 1
 
         wandb.log({
             "epoch train loss": epoch_train_loss / train_steps,
@@ -141,17 +151,32 @@ def train(epochs, input_dir, output_dir, print_every=100):
         epoch_train_loss = 0
         epoch_val_loss = 0
 
+# Train from Checkpoint
+def train_checkpoint(fpath, epochs, input_dir, output_dir, print_every=10):
+    checkpoint = torch.load(fpath)
+    model = model.load_state_dict(checkpoint)
+    train(epochs, input_dir, output_dir, print_every)
+
+# System Call
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, required=True)
     parser.add_argument('--input_dir', type=str, required=True)
     parser.add_argument('--output_dir', type=str, required=True)
-    parser.add_argument('--print_step', type=int)
+    parser.add_argument('--checkpoint', type=bool)
+    parser.add_argument('--checkpoint_fpath', type=str)
     args = parser.parse_args()
 
-    train(
-        epochs=args.epoch, 
-        input_dir=args.input_dir, 
-        output_dir=args.output_dir,
-        print_every=args.print_step
-    )
+    if args.checkpoint == True:
+        train_checkpoint(
+            fpath=args.checkpoint_fpath,
+            epochs=args.epoch, 
+            input_dir=args.input_dir, 
+            output_dir=args.output_dir,
+        )
+    else:
+        train(
+            epochs=args.epoch, 
+            input_dir=args.input_dir, 
+            output_dir=args.output_dir,
+        )
