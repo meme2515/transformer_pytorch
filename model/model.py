@@ -265,7 +265,7 @@ class Transformer(nn.Module):
         # query: (n_batch, query_seq_len)
         # No need to account for query sequence length! Only used in non-mixed layer.
         seq_len = query.size(1)
-        mask = torch.tensor(np.triu(np.ones((1, seq_len, seq_len))) == 0, device=query.device).long()
+        mask = torch.tensor(np.tril(np.ones((1, 256, 256)), k=0).astype('uint8'), device=query.device).long()
         mask.requires_grad = False
         return mask
 

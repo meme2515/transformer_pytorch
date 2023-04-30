@@ -20,8 +20,8 @@ class QUAK(Dataset):
         eng_tokenizer = BertTokenizerFast.from_pretrained("bert-base-cased")
         kor_tokenizer = BertTokenizerFast.from_pretrained("kykim/bert-kor-base")
 
-        eng_tokens = eng_tokenizer.encode(self.eng_feed[idx], padding="max_length", max_length=256, truncation=True)
-        kor_tokens = kor_tokenizer.encode(self.kor_feed[idx], padding="max_length", max_length=256, truncation=True)
+        eng_tokens = eng_tokenizer.encode(self.eng_feed[idx], padding="max_length", max_length=64, truncation=True)
+        kor_tokens = kor_tokenizer.encode(self.kor_feed[idx], padding="max_length", max_length=64, truncation=True)
 
         return eng_tokens, kor_tokens
 
