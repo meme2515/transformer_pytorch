@@ -1,3 +1,6 @@
 wandb
 QUAK-H
 model.pt
+module_test.py
+module_test.ipynb
+multi30k-dataset

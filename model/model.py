@@ -169,14 +169,14 @@ class DecoderBlock(nn.Module):
         self.layernorm2 = LayerNorm(d_model)
         self.layernorm3 = LayerNorm(d_model)
 
-    def forward(self, input, e_output, trg_mask, src_trg_mask):
-        output = self.multihead_attention1(input, input, input, trg_mask) # (n_batch, seq_len, d_model)
+    def forward(self, input, e_output, tgt_mask, src_tgt_mask):
+        output = self.multihead_attention1(input, input, input, tgt_mask) # (n_batch, seq_len, d_model)
         output = input + output
         output = self.layernorm1(output)
 
         # "the queries come from the previous decoder layer, 
         # and the memory keys and values come from the output of the encoder.""
-        output2 = self.multihead_attention2(e_output, e_output, output, src_trg_mask) # (n_batch, seq_len, d_model)
+        output2 = self.multihead_attention2(e_output, e_output, output, src_tgt_mask) # (n_batch, seq_len, d_model)
         output2 = output + output2
         output2 = self.layernorm2(output2)
 
@@ -206,46 +206,46 @@ class Encoder(nn.Module):
 
 # Decoder
 class Decoder(nn.Module):
-    def __init__(self, trg_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
+    def __init__(self, tgt_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
         super(Decoder, self).__init__()
         self.N = N
-        self.embedder = Embedder(trg_vocab, d_model)
+        self.embedder = Embedder(tgt_vocab, d_model)
         self.pos_enconder = PositionalEncoding(d_model, max_len)
         self.decoder_blocks = get_clones(DecoderBlock(d_model, n_heads, d_ff), N)
 
-    def forward(self, input, e_output, trg_mask, src_trg_mask):
+    def forward(self, input, e_output, tgt_mask, src_tgt_mask):
         # input : (n_batch, seq_len)
         # e_output : (n_batch, seq_len, d_model)
         seq_len = input.size()[1] # ineffective w/ padded input
         output = self.embedder(input) # (n_batch, seq_len, d_model)
         output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
         for i in range(self.N):
-            output = self.decoder_blocks[i](output, e_output, trg_mask, src_trg_mask) # (n_batch, seq_len, d_model)
+            output = self.decoder_blocks[i](output, e_output, tgt_mask, src_tgt_mask) # (n_batch, seq_len, d_model)
 
         return output
 
 # Transformer
 class Transformer(nn.Module):
-    def __init__(self, src_vocab, trg_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
+    def __init__(self, src_vocab, tgt_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
         super(Transformer, self).__init__()
         self.encoder = Encoder(src_vocab, d_model, max_len, n_heads, d_ff, N)
-        self.decoder = Decoder(trg_vocab, d_model, max_len, n_heads, d_ff, N)
-        self.linear = nn.Linear(d_model, trg_vocab)
+        self.decoder = Decoder(tgt_vocab, d_model, max_len, n_heads, d_ff, N)
+        self.linear = nn.Linear(d_model, tgt_vocab)
 
-    def forward(self, src, trg):
+    def forward(self, src, tgt):
         # src : (n_batch, src_seq_len)
-        # trg : (n_batch, trg_seq_len)
+        # tgt : (n_batch, tgt_seq_len)
         src_mask = self.make_src_mask(src)
-        trg_mask = self.make_trg_mask(trg)
-        src_trg_mask = self.make_src_trg_mask(src, trg)
+        tgt_mask = self.make_tgt_mask(tgt)
+        src_tgt_mask = self.make_src_tgt_mask(src, tgt)
 
         e_output = self.encoder(src, src_mask) # (n_batch, src_seq_len, d_model)
-        d_output = self.decoder(trg, e_output, trg_mask, src_trg_mask) # (n_batch, trg_seq_len, d_model)
-        output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, trg_seq_len, trg_vocab)
+        d_output = self.decoder(tgt, e_output, tgt_mask, src_tgt_mask) # (n_batch, tgt_seq_len, d_model)
+        output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, tgt_seq_len, tgt_vocab)
 
         return output
 
-    def make_pad_mask(self, query, key, pad_idx=0):
+    def make_pad_mask(self, query, key, pad_idx=1):
         # query: (n_batch, query_seq_len)
         # key: (n_batch, key_seq_len)
         query_seq_len, key_seq_len = query.size(1), key.size(1)
@@ -265,18 +265,18 @@ class Transformer(nn.Module):
         # query: (n_batch, query_seq_len)
         # No need to account for query sequence length! Only used in non-mixed layer.
         seq_len = query.size(1)
-        mask = torch.tensor(np.tril(np.ones((1, 256, 256)), k=0).astype('uint8'), device=query.device).long()
+        mask = torch.tensor(np.tril(np.ones((1, seq_len, seq_len)), k=0).astype('uint8'), device=query.device).long()
         mask.requires_grad = False
         return mask
 
     def make_src_mask(self, src):
         return self.make_pad_mask(src, src)
 
-    def make_trg_mask(self, trg):
-        pad_mask = self.make_pad_mask(trg, trg)
-        seq_mask = self.make_seq_mask(trg)
+    def make_tgt_mask(self, tgt):
+        pad_mask = self.make_pad_mask(tgt, tgt)
+        seq_mask = self.make_seq_mask(tgt)
         mask = pad_mask & seq_mask
         return mask
 
-    def make_src_trg_mask(self, src, trg):
-        return self.make_pad_mask(trg, src)
+    def make_src_tgt_mask(self, src, tgt):
+        return self.make_pad_mask(tgt, src)

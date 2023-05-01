@@ -1,8 +1,10 @@
 # QUAK Dataset : https://www.aihub.or.kr/aihubdata/data/view.do?currMenu=120&topMenu=100&aihubDataSe=extrldata&dataSetSn=71268
 
 from model.model import Transformer
-from model.dataloader import make_generator
+from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import StepLR
+from torchtext.datasets import Multi30k
+from util import tokenizer
 
 import torch.nn.functional as F
 import torch
@@ -20,10 +22,13 @@ D_MODEL = 512
 MAX_LEN = 256
 N_HEADS = 8
 N = 6
-SRC_VOCAB = 50000
-TRG_VOCAB = 50000
+SRC_VOCAB = tokenizer.de_vocab()
+TGT_VOCAB = tokenizer.en_vocab()
 LEARNING_RATE = 0.0001
 BETA1, BETA2 = 0.9, 0.98
+
+SRC_LANGUAGE = 'de'
+TGT_LANGUAGE = 'en'
 
 wandb.init(
     project="transformer v1",
@@ -39,7 +44,7 @@ wandb.init(
 
 model = Transformer(
     src_vocab=SRC_VOCAB,
-    trg_vocab=TRG_VOCAB,
+    tgt_vocab=TGT_VOCAB,
     d_model=D_MODEL,
     max_len=MAX_LEN,
     n_heads=N_HEADS,
@@ -56,7 +61,7 @@ for p in model.parameters():
         nn.init.xavier_uniform_(p)
 
 # Adam Optimizer
-optim = torch.optim.Adam(
+optimizer = torch.optim.Adam(
     model.parameters(), 
     lr=LEARNING_RATE, 
     betas=(BETA1, BETA2), 
@@ -64,14 +69,14 @@ optim = torch.optim.Adam(
 )
 
 # LR Scheduler
-scheduler = StepLR(optim, step_size=10, gamma=0.1)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, verbose=True)
 
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr']
 
 # Training Step
-def train(epochs, input_dir, output_dir, print_every=10):
+def train(epochs, print_every=10):
     model.train()
     
     start = time.time()
@@ -83,25 +88,29 @@ def train(epochs, input_dir, output_dir, print_every=10):
     train_steps = 0
     val_steps = 0
 
-    train_dataloader, val_dataloader, _ = make_generator(input_dir, output_dir)
+    train_iter = Multi30k(split='train', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
+    train_dataloader = DataLoader(train_iter, batch_size=64, collate_fn=tokenizer.collate_fn)
+
+    val_iter = Multi30k(split='valid', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
+    val_dataloader = DataLoader(val_iter, batch_size=64, collate_fn=tokenizer.collate_fn)
     
     for epoch in range(epochs):
+        i = 0
         # Train Step
-        for i, value in enumerate(train_dataloader):
-            src, trg = value
-            source = torch.stack(src).transpose(-2, -1).to(DEVICE)
-            target = torch.stack(trg).transpose(-2, -1).to(DEVICE)
+        for src, tgt in train_dataloader:
+            source = src.transpose(-2, -1).to(DEVICE)
+            target = tgt.transpose(-2, -1).to(DEVICE)
 
             target_input = target[:, :-1]
             target_output = target[:, 1:].contiguous().view(-1)
 
             model.train(True)
             preds = model(source, target_input)
-            optim.zero_grad()
+            optimizer.zero_grad()
             
-            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=0)
+            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=1)
             loss.backward()
-            optim.step()
+            optimizer.step()
             wandb.log({"step train loss": loss})
 
             train_loss += loss.data
@@ -110,9 +119,10 @@ def train(epochs, input_dir, output_dir, print_every=10):
             if (i + 1) % print_every == 0:
                 loss_avg = train_loss / print_every
                 print("Train : time = %dm, epoch %d, iter = %d, loss = %.10f, lr = %.10f, %ds per %d iters" % \
-                      ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, get_lr(optim), time.time() - temp, print_every))
+                      ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, get_lr(optimizer), time.time() - temp, print_every))
                 train_loss = 0
                 temp = time.time()
+            i += 1
                 
         scheduler.step()
         train_steps = i + 1
@@ -120,27 +130,28 @@ def train(epochs, input_dir, output_dir, print_every=10):
         if (epoch + 1) % 10 == 0:
             torch.save(model, 'checkpoint_ep_%d.pt'%(epoch + 1))
         
+        j = 0
         # Validation Step
-        for j, value in enumerate(val_dataloader):
-            src, trg = value
-            source = torch.stack(src).transpose(-2, -1).to(DEVICE)
-            target = torch.stack(trg).transpose(-2, -1).to(DEVICE)
+        for src, tgt in val_dataloader:
+            source = src.transpose(-2, -1).to(DEVICE)
+            target = tgt.transpose(-2, -1).to(DEVICE)
 
             target_input = target[:, :-1]
             target_output = target[:, 1:].contiguous().view(-1)
 
             model.train(False)
             preds = model(source, target_input)
-            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=0)
+            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=1)
 
             epoch_val_loss += loss.data
 
             if (j + 1) % print_every == 0:
                 loss_avg = val_loss / print_every
                 print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, lr = %.10f, %ds per %d iters" % \
-                      ((time.time() - start) // 60, epoch + 1, j + 1, loss_avg, get_lr(optim), time.time() - temp, print_every))
+                      ((time.time() - start) // 60, epoch + 1, j + 1, loss_avg, get_lr(optimizer), time.time() - temp, print_every))
                 val_loss = 0
                 temp = time.time()
+            j += 1
         val_steps = j + 1
 
         wandb.log({
@@ -161,8 +172,6 @@ def train_checkpoint(fpath, epochs, input_dir, output_dir, print_every=10):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, required=True)
-    parser.add_argument('--input_dir', type=str, required=True)
-    parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--checkpoint', type=bool)
     parser.add_argument('--checkpoint_fpath', type=str)
     args = parser.parse_args()
@@ -171,12 +180,8 @@ if __name__ == "__main__":
         train_checkpoint(
             fpath=args.checkpoint_fpath,
             epochs=args.epoch, 
-            input_dir=args.input_dir, 
-            output_dir=args.output_dir,
         )
     else:
         train(
             epochs=args.epoch, 
-            input_dir=args.input_dir, 
-            output_dir=args.output_dir,
         )
