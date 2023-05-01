@@ -123,8 +123,6 @@ def train(epochs, print_every=10):
                 train_loss = 0
                 temp = time.time()
             i += 1
-                
-        scheduler.step()
         train_steps = i + 1
 
         if (epoch + 1) % 10 == 0:
@@ -158,6 +156,7 @@ def train(epochs, print_every=10):
             "epoch train loss": epoch_train_loss / train_steps,
             "epoch validation loss": epoch_val_loss / val_steps,
         })
+        scheduler.step(epoch_val_loss / val_steps)
 
         epoch_train_loss = 0
         epoch_val_loss = 0
