@@ -20,6 +20,7 @@ class Embedder(nn.Module):
     def __init__(self, vocab_size, d_model=512):
         super(Embedder, self).__init__()
         self.embed = nn.Embedding(vocab_size, d_model) # vocab_size is not max_len
+        self.d_model = d_model
 
     def forward(self, input):
         # input : (n_batch, seq_len)
@@ -47,7 +48,7 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, input):
         # input : (n_batch, seq_len, d_model)
-        seq_len = input.size()[1] # ineffective w/ padded input
+        seq_len = input.size()[1] 
         pos_embed = self.encoding[:, :seq_len, :]
         output = input * math.sqrt(self.d_model)
         output = output + pos_embed # (n_batch, seq_len, d_model)
@@ -241,7 +242,7 @@ class Transformer(nn.Module):
 
         e_output = self.encoder(src, src_mask) # (n_batch, src_seq_len, d_model)
         d_output = self.decoder(tgt, e_output, tgt_mask, src_tgt_mask) # (n_batch, tgt_seq_len, d_model)
-        output = F.softmax(self.linear(d_output), dim=-1) # (n_batch, tgt_seq_len, tgt_vocab)
+        output = self.linear(d_output) # (n_batch, tgt_seq_len, tgt_vocab)
 
         return output
 

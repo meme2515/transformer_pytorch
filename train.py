@@ -24,7 +24,7 @@ N_HEADS = 8
 N = 6
 SRC_VOCAB = tokenizer.de_vocab()
 TGT_VOCAB = tokenizer.en_vocab()
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.1
 BETA1, BETA2 = 0.9, 0.98
 
 SRC_LANGUAGE = 'de'
@@ -56,20 +56,34 @@ model.to(DEVICE)
 wandb.watch(model, log=None)
 
 # Model initialization
-for p in model.parameters():
-    if p.dim() > 1:
-        nn.init.xavier_uniform_(p)
+# for p in model.parameters():
+#     if p.dim() > 1:
+#         nn.init.xavier_uniform_(p)
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def initialize_weights(m):
+    if hasattr(m, 'weight') and m.weight.dim() > 1:
+        nn.init.kaiming_uniform(m.weight.data)
+
+print(f'The model has {count_parameters(model):,} trainable parameters')
+model.apply(initialize_weights)
 
 # Adam Optimizer
 optimizer = torch.optim.Adam(
     model.parameters(), 
     lr=LEARNING_RATE, 
     betas=(BETA1, BETA2), 
+    weight_decay=5e-4,
     eps=1e-9
 )
 
 # LR Scheduler
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, verbose=True)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, 
+                                                       verbose=True, 
+                                                       factor=0.9, 
+                                                       patience=10)
 
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
@@ -89,10 +103,10 @@ def train(epochs, print_every=10):
     val_steps = 0
 
     train_iter = Multi30k(split='train', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
-    train_dataloader = DataLoader(train_iter, batch_size=64, collate_fn=tokenizer.collate_fn)
+    train_dataloader = DataLoader(train_iter, batch_size=128, collate_fn=tokenizer.collate_fn)
 
     val_iter = Multi30k(split='valid', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
-    val_dataloader = DataLoader(val_iter, batch_size=64, collate_fn=tokenizer.collate_fn)
+    val_dataloader = DataLoader(val_iter, batch_size=128, collate_fn=tokenizer.collate_fn)
     
     for epoch in range(epochs):
         i = 0
@@ -156,7 +170,9 @@ def train(epochs, print_every=10):
             "epoch train loss": epoch_train_loss / train_steps,
             "epoch validation loss": epoch_val_loss / val_steps,
         })
-        scheduler.step(epoch_val_loss / val_steps)
+
+        if epoch > 10:
+            scheduler.step(epoch_val_loss / val_steps)
 
         epoch_train_loss = 0
         epoch_val_loss = 0
