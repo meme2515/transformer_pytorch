@@ -139,21 +139,25 @@ class LayerNorm(nn.Module):
     
 # Encoder Block
 class EncoderBlock(nn.Module):
-    def __init__(self, d_model=512, n_heads=8, d_ff=2048):
+    def __init__(self, d_model=512, n_heads=8, d_ff=2048, drop_prob=0.1):
         super(EncoderBlock, self).__init__()
         self.multihead_attention = MultiHeadAttention(d_model, n_heads)
         self.feedforward = FeedForward(d_model, d_ff)
         self.layernorm1 = LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(p=drop_prob)
         self.layernorm2 = LayerNorm(d_model)
+        self.dropout2 = nn.Dropout(p=drop_prob)
     
     def forward(self, input, mask):
         # input : (n_batch, seq_len, d_model)
         # final output : (n_batch, seq_len, d_model)
         output = self.multihead_attention(input, input, input, mask) # (n_batch, seq_len, d_model)
+        output = self.dropout1(output)
         output = input + output
         output = self.layernorm1(output)
 
         output2 = self.feedforward(output) # (n_batch, seq_len, d_model)
+        output2 = self.dropout2(output)
         output2 = output + output2
         output2 = self.layernorm2(output2)
 
@@ -161,27 +165,33 @@ class EncoderBlock(nn.Module):
     
 # Decoder Block
 class DecoderBlock(nn.Module):
-    def __init__(self, d_model=512, n_heads=8, d_ff=2048):
+    def __init__(self, d_model=512, n_heads=8, d_ff=2048, drop_prob=0.1):
         super(DecoderBlock, self).__init__()
         self.multihead_attention1 = MultiHeadAttention(d_model, n_heads)
         self.multihead_attention2 = MultiHeadAttention(d_model, n_heads)
         self.feedforward = FeedForward(d_model, d_ff)
         self.layernorm1 = LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(p=drop_prob)
         self.layernorm2 = LayerNorm(d_model)
+        self.dropout2 = nn.Dropout(p=drop_prob)
         self.layernorm3 = LayerNorm(d_model)
+        self.dropout3 = nn.Dropout(p=drop_prob)
 
     def forward(self, input, e_output, tgt_mask, src_tgt_mask):
         output = self.multihead_attention1(input, input, input, tgt_mask) # (n_batch, seq_len, d_model)
+        output = self.dropout1(output)
         output = input + output
         output = self.layernorm1(output)
 
         # "the queries come from the previous decoder layer, 
         # and the memory keys and values come from the output of the encoder.""
         output2 = self.multihead_attention2(e_output, e_output, output, src_tgt_mask) # (n_batch, seq_len, d_model)
+        output2 = self.dropout2(output2)
         output2 = output + output2
         output2 = self.layernorm2(output2)
 
         output3 = self.feedforward(output2) # (n_batch, seq_len, d_model)
+        output3 = self.dropout3(output3)
         output3 = output2 + output3
         output3 = self.layernorm3(output3)
 
@@ -189,17 +199,19 @@ class DecoderBlock(nn.Module):
     
 # Encoder
 class Encoder(nn.Module):
-    def __init__(self, src_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
+    def __init__(self, src_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6, drop_prob=0.1):
         super(Encoder, self).__init__()
         self.N = N
         self.embedder = Embedder(src_vocab, d_model)
         self.pos_enconder = PositionalEncoding(d_model, max_len)
-        self.encoder_blocks = get_clones(EncoderBlock(d_model, n_heads, d_ff), N)
+        self.encoder_blocks = get_clones(EncoderBlock(d_model, n_heads, d_ff, drop_prob), N)
+        self.dropout = nn.Dropout(p=drop_prob)
 
     def forward(self, input, mask):
         # input : (n_batch, seq_len)
         output = self.embedder(input) # (n_batch, seq_len, d_model)
         output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
+        output = self.dropout(output)
         for i in range(self.N):
             output = self.encoder_blocks[i](output, mask) # (n_batch, seq_len, d_model)
 
@@ -207,12 +219,13 @@ class Encoder(nn.Module):
 
 # Decoder
 class Decoder(nn.Module):
-    def __init__(self, tgt_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
+    def __init__(self, tgt_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6, drop_prob=0.1):
         super(Decoder, self).__init__()
         self.N = N
         self.embedder = Embedder(tgt_vocab, d_model)
         self.pos_enconder = PositionalEncoding(d_model, max_len)
-        self.decoder_blocks = get_clones(DecoderBlock(d_model, n_heads, d_ff), N)
+        self.decoder_blocks = get_clones(DecoderBlock(d_model, n_heads, d_ff, drop_prob), N)
+        self.dropout = nn.Dropout(p=drop_prob)
 
     def forward(self, input, e_output, tgt_mask, src_tgt_mask):
         # input : (n_batch, seq_len)
@@ -220,6 +233,7 @@ class Decoder(nn.Module):
         seq_len = input.size()[1] # ineffective w/ padded input
         output = self.embedder(input) # (n_batch, seq_len, d_model)
         output = self.pos_enconder(output) # (n_batch, seq_len, d_model)
+        output = self.dropout(output)
         for i in range(self.N):
             output = self.decoder_blocks[i](output, e_output, tgt_mask, src_tgt_mask) # (n_batch, seq_len, d_model)
 
@@ -227,10 +241,10 @@ class Decoder(nn.Module):
 
 # Transformer
 class Transformer(nn.Module):
-    def __init__(self, src_vocab, tgt_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6):
+    def __init__(self, src_vocab, tgt_vocab, d_model=512, max_len=256, n_heads=8, d_ff=2048, N=6, drop_prob=0.1):
         super(Transformer, self).__init__()
-        self.encoder = Encoder(src_vocab, d_model, max_len, n_heads, d_ff, N)
-        self.decoder = Decoder(tgt_vocab, d_model, max_len, n_heads, d_ff, N)
+        self.encoder = Encoder(src_vocab, d_model, max_len, n_heads, d_ff, N, drop_prob)
+        self.decoder = Decoder(tgt_vocab, d_model, max_len, n_heads, d_ff, N, drop_prob)
         self.linear = nn.Linear(d_model, tgt_vocab)
 
     def forward(self, src, tgt):
