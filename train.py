@@ -14,6 +14,7 @@ import wandb
 import os
 import argparse
 import shutil
+import sys
 
 # DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,13 +31,16 @@ BETA1, BETA2 = 0.9, 0.98
 SRC_LANGUAGE = 'de'
 TGT_LANGUAGE = 'en'
 
+de_dict = tokenizer.de_dict()
+en_dict = tokenizer.en_dict()
+
 wandb.init(
     project="transformer v1",
 
     config={
         "learning_rate" : LEARNING_RATE,
         "architecture" : "Transformer",
-        "dataset" : "QUAK-H",
+        "dataset" : "Multi30k",
         "beta1" : BETA1,
         "beta2" : BETA2
     }
@@ -49,16 +53,12 @@ model = Transformer(
     max_len=MAX_LEN,
     n_heads=N_HEADS,
     N=N,
+    # device=DEVICE
 )
 
 # MPS & CUDA
 model.to(DEVICE)
 wandb.watch(model, log=None)
-
-# Model initialization
-# for p in model.parameters():
-#     if p.dim() > 1:
-#         nn.init.xavier_uniform_(p)
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -85,12 +85,25 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
                                                        factor=0.9, 
                                                        patience=10)
 
+# Cross Entropy Loss
+criterion = nn.CrossEntropyLoss(ignore_index=1)
+
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr']
 
+def idx_to_word(x, vocab):
+    words = []
+    x = x[:30]
+    for i in x:
+        word = vocab.get_itos()[i]
+        if '<' not in word:
+            words.append(word)
+    words = " ".join(words)
+    return words
+
 # Training Step
-def train(epochs, print_every=10):
+def train(epochs, print_every=100):
     model.train()
     
     start = time.time()
@@ -103,11 +116,12 @@ def train(epochs, print_every=10):
     val_steps = 0
 
     train_iter = Multi30k(split='train', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
-    train_dataloader = DataLoader(train_iter, batch_size=128, collate_fn=tokenizer.collate_fn)
+    train_dataloader = DataLoader(train_iter, batch_size=128, collate_fn=tokenizer.collate_fn, shuffle=True)
 
     val_iter = Multi30k(split='valid', language_pair=(SRC_LANGUAGE, TGT_LANGUAGE))
-    val_dataloader = DataLoader(val_iter, batch_size=128, collate_fn=tokenizer.collate_fn)
+    val_dataloader = DataLoader(val_iter, batch_size=128, collate_fn=tokenizer.collate_fn, shuffle=True)
     
+    # model.train(True)
     for epoch in range(epochs):
         i = 0
         # Train Step
@@ -118,12 +132,12 @@ def train(epochs, print_every=10):
             target_input = target[:, :-1]
             target_output = target[:, 1:].contiguous().view(-1)
 
-            model.train(True)
-            preds = model(source, target_input)
             optimizer.zero_grad()
+            preds = model(source, target_input)
             
-            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=1)
+            loss = criterion(preds.view(-1, preds.size(-1)), target_output)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             optimizer.step()
             wandb.log({"step train loss": loss})
 
@@ -136,67 +150,58 @@ def train(epochs, print_every=10):
                       ((time.time() - start) // 60, epoch + 1, i + 1, loss_avg, get_lr(optimizer), time.time() - temp, print_every))
                 train_loss = 0
                 temp = time.time()
+                
             i += 1
-        train_steps = i + 1
 
-        if (epoch + 1) % 10 == 0:
+        train_steps = i + 1
+        if (epoch + 1) % 100 == 0:
             torch.save(model, 'checkpoint_ep_%d.pt'%(epoch + 1))
-        
+            
         j = 0
         # Validation Step
-        for src, tgt in val_dataloader:
-            source = src.transpose(-2, -1).to(DEVICE)
-            target = tgt.transpose(-2, -1).to(DEVICE)
+        with torch.no_grad():
+            for src, tgt in val_dataloader:
+                source = src.transpose(-2, -1).to(DEVICE)
+                target = tgt.transpose(-2, -1).to(DEVICE)
 
-            target_input = target[:, :-1]
-            target_output = target[:, 1:].contiguous().view(-1)
+                target_input = target[:, :-1]
+                target_output = target[:, 1:].contiguous().view(-1)
 
-            model.train(False)
-            preds = model(source, target_input)
-            loss = F.cross_entropy(preds.view(-1, preds.size(-1)), target_output, ignore_index=1)
+                preds = model(source, target_input)
+                loss = criterion(preds.view(-1, preds.size(-1)), target_output)
 
-            epoch_val_loss += loss.data
+                epoch_val_loss += loss.data
 
-            if (j + 1) % print_every == 0:
-                loss_avg = val_loss / print_every
-                print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, lr = %.10f, %ds per %d iters" % \
-                      ((time.time() - start) // 60, epoch + 1, j + 1, loss_avg, get_lr(optimizer), time.time() - temp, print_every))
-                val_loss = 0
-                temp = time.time()
-            j += 1
-        val_steps = j + 1
+                if (j + 1) % (print_every) == 0:
+                    loss_avg = val_loss / print_every
+                    print("Validation : time = %dm, epoch %d, iter = %d, loss = %.10f, lr = %.10f, %ds per %d iters" % \
+                          ((time.time() - start) // 60, epoch + 1, j + 1, loss_avg, get_lr(optimizer), time.time() - temp, print_every))
+                    val_loss = 0
+                    temp = time.time()
+                j += 1
+            val_steps = j + 1
+
+        predicted_sentence = torch.argmax(preds.view(-1, preds.size(-1)), dim=1)
+        # print(predicted_sentence.shape)
+        predicted_sentence = idx_to_word(predicted_sentence, en_dict)
+        original_sentence = idx_to_word(target_output, en_dict)
+        print("Predicted Sentence :", predicted_sentence)
+        print("Original Sentence :", original_sentence)
 
         wandb.log({
             "epoch train loss": epoch_train_loss / train_steps,
             "epoch validation loss": epoch_val_loss / val_steps,
         })
 
-        if epoch > 10:
+        if epoch > 100:
             scheduler.step(epoch_val_loss / val_steps)
 
         epoch_train_loss = 0
         epoch_val_loss = 0
 
-# Train from Checkpoint
-def train_checkpoint(fpath, epochs, input_dir, output_dir, print_every=10):
-    checkpoint = torch.load(fpath)
-    model = model.load_state_dict(checkpoint)
-    train(epochs, input_dir, output_dir, print_every)
-
 # System Call
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--epoch', type=int, required=True)
-    parser.add_argument('--checkpoint', type=bool)
-    parser.add_argument('--checkpoint_fpath', type=str)
     args = parser.parse_args()
-
-    if args.checkpoint == True:
-        train_checkpoint(
-            fpath=args.checkpoint_fpath,
-            epochs=args.epoch, 
-        )
-    else:
-        train(
-            epochs=args.epoch, 
-        )
+    train(epochs=args.epoch)

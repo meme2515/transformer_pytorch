@@ -101,3 +101,9 @@ def de_vocab():
 
 def en_vocab():
     return len(vocab_transform[TGT_LANGUAGE])
+
+def de_dict():
+    return vocab_transform[SRC_LANGUAGE]
+
+def en_dict():
+    return vocab_transform[TGT_LANGUAGE]
