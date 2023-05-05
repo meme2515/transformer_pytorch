@@ -189,7 +189,7 @@ def make_tgt_mask(tgt):
     mask = pad_mask & seq_mask
     return mask
 
-def make_src_tgt_mask(ssrc, tgt):
+def make_src_tgt_mask(src, tgt):
     return make_pad_mask(tgt, src)
 ```
 
