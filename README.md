@@ -6,4 +6,4 @@
 
 ## Train & Validation Loss
 
-<img src = "images/loss.png" width="200">
+<img src = "images/loss.png" width="800">
