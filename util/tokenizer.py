@@ -87,6 +87,7 @@ class Tokenizer:
 
         src_batch = pad_sequence(src_batch, padding_value=self.PAD_IDX)
         tgt_batch = pad_sequence(tgt_batch, padding_value=self.PAD_IDX)
+
         return src_batch, tgt_batch
 
 
