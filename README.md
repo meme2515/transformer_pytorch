@@ -6,7 +6,7 @@ Although the intention is to reproduce the original paper's implementation, this
 
 ## :electric_plug: The Transformer Architecture
 
-<img src = "images/transformer.svg" width="600">
+<img src = "images/transformer.webp" width="600">
 
 ```python
 class Transformer(nn.Module):
