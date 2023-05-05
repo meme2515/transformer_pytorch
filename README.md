@@ -6,4 +6,4 @@
 
 ## Train & Validation Loss
 
-![alt text](images/loss.png)
+![alt text](images/loss.png){: width="200"}
