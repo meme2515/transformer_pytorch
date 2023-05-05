@@ -6,6 +6,8 @@ Although the intention is to reproduce the original paper's implementation, this
 
 ## :electric_plug: The Transformer Architecture
 
+<img src = "images/transformer.svg" width="600">
+
 ```python
 class Transformer(nn.Module):
     def __init__(self, src_vocab, tgt_vocab, d_model, max_len, n_heads, d_ff, N, drop_prob):
@@ -26,7 +28,7 @@ class Transformer(nn.Module):
         return output
 ```
 
-### The Encoder Module
+### A. The Encoder Module
 
 ```python
 class EncoderBlock(nn.Module):
@@ -53,7 +55,7 @@ class EncoderBlock(nn.Module):
         return output2
 ```
 
-### The Decoder Module
+### B. The Decoder Module
 
 ```python
 class DecoderBlock(nn.Module):
@@ -88,7 +90,7 @@ class DecoderBlock(nn.Module):
         return output3
 ```
 
-### Self Attention
+### C. Self Attention
 
 ```python
 class SelfAttention(nn.Module):
@@ -106,7 +108,7 @@ class SelfAttention(nn.Module):
         return output
 ```
 
-### Multihead Attention
+### D. Multihead Attention
 
 ```python
 class MultiHeadAttention(nn.Module):
@@ -144,7 +146,7 @@ class MultiHeadAttention(nn.Module):
         return 
 ```
 
-### Masking
+### E. Masking
 
 ```python
 def make_pad_mask(self, query, key, pad_idx=1):
