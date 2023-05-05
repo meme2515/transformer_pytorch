@@ -28,7 +28,7 @@ class Transformer(nn.Module):
         return output
 ```
 
-### A. The Encoder Module
+### The Encoder Module
 
 ```python
 class EncoderBlock(nn.Module):
@@ -55,7 +55,7 @@ class EncoderBlock(nn.Module):
         return output2
 ```
 
-### B. The Decoder Module
+### The Decoder Module
 
 ```python
 class DecoderBlock(nn.Module):
@@ -90,7 +90,9 @@ class DecoderBlock(nn.Module):
         return output3
 ```
 
-### C. Self Attention
+### Self Attention
+
+<img src = "images/self_attention.png" width="600">
 
 ```python
 class SelfAttention(nn.Module):
@@ -108,7 +110,7 @@ class SelfAttention(nn.Module):
         return output
 ```
 
-### D. Multihead Attention
+### Multihead Attention
 
 ```python
 class MultiHeadAttention(nn.Module):
@@ -146,7 +148,15 @@ class MultiHeadAttention(nn.Module):
         return 
 ```
 
-### E. Masking
+### Masking
+
+Sequential Masking
+
+<img src = "images/decoder_mask.png">
+
+Pad Masking
+
+<img src = "images/pad_mask.png">
 
 ```python
 def make_pad_mask(self, query, key, pad_idx=1):
@@ -185,6 +195,6 @@ def make_src_tgt_mask(ssrc, tgt):
 
 ## :chart_with_downwards_trend: Train & Validation Loss
 
-The following is the cross entropy loss of train and test runs on 100 epoch test run.
+The following is the cross entropy loss of train and test runs on 100 epoch test run. The minimum evaluation loss is recorded at 0.0733. BLEU scoring was not implemented in this case.
 
 <img src = "images/loss.png" width="600">
